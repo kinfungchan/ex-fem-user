@@ -219,7 +219,7 @@ class SubdomainSolution:
             self.res_szz[e] = self.szz[e] + (C2dt * (self.dxx[e] + self.dyy[e]))
             self.res_sxy[e] = self.sxy[e] + (Gdt * self.dxy[e])
 
-    def assemble_internal(self):
+    def assmb_internal(self):
         # Scale stresses by volume (integration weight)
         sxx = np.zeros(self.n_elem)
         syy = np.zeros(self.n_elem)
@@ -248,7 +248,7 @@ class SubdomainSolution:
             self.f_int[node4][0] += sxx[e] * self.dN4dx[e] + sxy[e] * self.dN4dy[e]
             self.f_int[node4][1] += sxy[e] * self.dN4dx[e] + syy[e] * self.dN4dy[e]
 
-    def assemble_mass(self):
+    def assmb_mass(self):
         for e in range(self.n_elem):
             element_mass = self.vol[e] * self.rho / 4.0  # Divide by 4 for 4-node elements
             nodes = self.conn[e] - 1
@@ -260,19 +260,19 @@ class SubdomainSolution:
         self.el_geom()
         self.el_rate()
         self.matstatupd()
-        self.assemble_internal()
+        self.assmb_internal()
         # Assume mass-conserving problem
         if self.t == 0.0:
-            self.assemble_mass()
+            self.assmb_mass()
 
-    def assemble_vbcs(self, t):
+    def assmb_vbcs(self, t):
         if self.v_bc:
             for index, velocities in zip(self.v_bc.indexes, self.v_bc.velocities):
                 for dof, velocity in enumerate(velocities):
                     if velocity is not None or 0:
                         self.v[index - 1][dof] = velocity(t)
 
-    def assemble_abcs(self):
+    def assmb_abcs(self):
         if self.a_bc:
             for index, accelerations in zip(self.a_bc.indexes, self.a_bc.accelerations):
                 for dof, acceleration in enumerate(accelerations):
@@ -281,12 +281,12 @@ class SubdomainSolution:
   
     def solveq(self):
         self.a = (self.f_ext - self.f_int) / self.mass
-        self.assemble_abcs()
+        self.assmb_abcs()
         if self.n == 0:
             self.v += 0.5 * self.a * self.dt
         else:
             self.v += self.a * self.dt
-        self.assemble_vbcs(self.t + 0.5 * self.dt)
+        self.assmb_vbcs(self.t + 0.5 * self.dt)
         self.u += self.v * self.dt
         self.n += 1
         self.t += self.dt
