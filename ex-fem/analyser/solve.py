@@ -1,8 +1,4 @@
 import numpy as np
-from database.boundaryConditions import  VelBoundaryConditions as vbc
-from database.boundaryConditions import  AccelBoundaryConditions as abc
-from database.boundaryConditions import  ForceBoundaryConditions as fbc
-from database.boundaryConditions import  SupportBoundaryConditions as sbc
 
 class SubdomainSolution:
 
@@ -24,7 +20,7 @@ class SubdomainSolution:
             dx = self.coo[self.conn[i][1]-1][0] - self.coo[self.conn[i][0]-1][0]
             dy = self.coo[self.conn[i][1]-1][1] - self.coo[self.conn[i][0]-1][1]
             self.clen[i] = np.sqrt(dx**2 + dy**2)
-        self.thickness = 0.5 
+        self.thickness = 1.0
         self.vol = np.zeros(self.n_elem)
         for i in range(self.n_elem):
             x1, y1 = self.coo[self.conn[i][0]-1]
@@ -36,10 +32,18 @@ class SubdomainSolution:
         self.a = np.zeros((self.n_nodes, 2), dtype=float) #[self.n_nodes][dof] 
         self.v = np.zeros((self.n_nodes, 2), dtype=float)
         self.u = np.zeros((self.n_nodes, 2), dtype=float)
+        self.u_inc = np.zeros((self.n_nodes, 2), dtype=float) # displacement increment
+        self.a_tilda = np.zeros((self.n_nodes, 2), dtype=float) # unconstrained accel
         # Kinetic
         self.f_int = np.zeros((self.n_nodes, 2), dtype=float)
         self.mass = np.zeros((self.n_nodes, 2), dtype=float)
         self.f_ext = np.zeros((self.n_nodes, 2), dtype=float)
+        # Previous
+        self.a_prev = np.zeros((self.n_nodes, 2), dtype=float)
+        self.v_prev = np.zeros((self.n_nodes, 2), dtype=float)
+        self.u_prev = np.zeros((self.n_nodes, 2), dtype=float)
+        self.f_int_prev = np.zeros((self.n_nodes, 2), dtype=float)
+        self.f_ext_prev = np.zeros((self.n_nodes, 2), dtype=float)
 
         ## Element Quantities
         # Velocity Gradients
@@ -70,8 +74,9 @@ class SubdomainSolution:
         self.res_sxy = np.zeros(self.n_elem)
         self.res_szz = np.zeros(self.n_elem)
         # Wave Speeds
-        self.waves = np.sqrt(self.E / self.rho)
-        # Gauss Point Location(s) adn Quantities
+        self.waves = np.sqrt(self.E * (1.0 - self.poisson)
+             / (self.rho * (1.0 + self.poisson) * (1.0 - 2.0*self.poisson)))
+        # Gauss Point Location(s) and Quantities
         self.gp = np.array([0.0,0.0]) #single gauss point
         self.J1 = np.zeros(self.n_elem) # dx/dxi
         self.J2 = np.zeros(self.n_elem) # dy/dxi
@@ -82,8 +87,6 @@ class SubdomainSolution:
         # Boundary Conditions
         self.v_bc = self.input.v_bc
         self.a_bc = self.input.a_bc
-        self.f_bc = self.input.f_bc
-        self.s_bc = self.input.s_bc
 
         ## Time
         self.n = 0
@@ -91,12 +94,8 @@ class SubdomainSolution:
         self.tfinal = self.input.tfinal
         self.Co = self.input.Co
         self.dt = self.Co * (np.min(self.clen) / self.waves)
-
-        ## Energies
-        self.kinetic_energy = []
-        self.internal_energy = []
-        self.tot_energy = []
-        self.timestamps = []
+        self.t_prev = 0.0
+        self.dt_prev = 0.0
 
         ## Global Shape Function Derivatives
         self.dN1dx = np.zeros((self.n_elem), dtype=float)
@@ -188,36 +187,49 @@ class SubdomainSolution:
             self.wyy[e] = 0.0  # ω_yy
             self.wzz[e] = 0.5 * (self.lyx[e] - self.lxy[e])  
 
-            # Calculate volumetric strain rate (optional, but useful)
+            # Calculate volumetric strain rate
             self.dvol[e] = self.dxx[e] + self.dyy[e]
 
     def matstatupd(self):
-        for e in range(self.n_elem): # Calculate Spin Increment
-            self.wxx[e] = self.wxx[e] * self.dt
-            self.wyy[e] = self.wyy[e] * self.dt
-            self.wzz[e] = self.wzz[e] * self.dt
-
-        for e in range(self.n_elem): # Rotate Stress (Sn+1 = Sn + Sn*W - W*Sn)
-            self.r1[e] = 2.0 * self.res_sxy[e] * self.wzz[e]
-            self.r2[e] = 0.0 # 2.0 * res_sxz * wyy
-            self.r3[e] = 0.0 # 2.0 * res_syz * wxx
+        # Plane-strain rate-form
+        use_strain_rates = True
+        dt = self.dt
+        E = self.E
+        nu = self.poisson
+        mu = E / (2.0 * (1.0 + nu))                         # shear modulus
+        lam = (nu * E) / ((1.0 + nu) * (1.0 - 2.0 * nu))    # Lame's first parameter
+        if use_strain_rates:
+            lam_dt = lam * dt
+            mu_dt = mu * dt
+            lp2mu_dt = (lam + 2.0 * mu) * dt
+        else:
+            lam_dt = lam
+            mu_dt = mu
+            lp2mu_dt = (lam + 2.0 * mu)
 
         for e in range(self.n_elem):
-            # Rotate stress (Sn+1 = Sn + Sn*W - W*Sn)
-            self.sxx[e] = self.res_sxx[e] - self.r1[e] + self.r2[e]
-            self.syy[e] = self.res_syy[e] + self.r1[e] - self.r3[e]
-            self.szz[e] = self.res_szz[e] - self.r2[e] + self.r3[e]
-            self.sxy[e] = self.res_sxy[e] + self.wzz[e] * (self.res_sxx[e] - self.res_syy[e]) # + (wyy * res_syz) + (wxx * res_sxz)
-            
-        Gdt = self.E / (2.0 * (1.0 + self.poisson)) * self.dt
-        C1dt = self.E * (1.0 - self.poisson) / ((1.0 + self.poisson) * (1.0 - 2.0 * self.poisson)) * self.dt
-        C2dt = C1dt * self.poisson / (1.0 - self.poisson)
+            wzz_inc = self.wzz[e] * dt if use_strain_rates else self.wzz[e]
+            r1 = 2.0 * self.res_sxy[e] * wzz_inc
 
-        for e in range(self.n_elem): # Update Stress (Sn+1 = Sn+1 + C * dε)
-            self.res_sxx[e] = self.sxx[e] + (C1dt * self.dxx[e] + C2dt * self.dyy[e])
-            self.res_syy[e] = self.syy[e] + (C1dt * self.dyy[e] + C2dt * self.dxx[e])
-            self.res_szz[e] = self.szz[e] + (C2dt * (self.dxx[e] + self.dyy[e]))
-            self.res_sxy[e] = self.sxy[e] + (Gdt * self.dxy[e])
+            # rotated stresses (before elastic increment)
+            sxx_rot = self.res_sxx[e] - r1
+            syy_rot = self.res_syy[e] + r1
+            szz_rot = self.res_szz[e]
+            sxy_rot = self.res_sxy[e] + wzz_inc * (self.res_sxx[e] - self.res_syy[e])
+
+            de_xx = self.dxx[e]
+            de_yy = self.dyy[e]
+            de_xy = self.dxy[e]   # tensor shear rate: eps_dot_xy
+
+            ds_xx = lp2mu_dt * de_xx + lam_dt * de_yy
+            ds_yy = lam_dt * de_xx + lp2mu_dt * de_yy
+            ds_zz = lam_dt * (de_xx + de_yy)
+            ds_xy = 2.0 * mu_dt * de_xy
+
+            self.res_sxx[e] = sxx_rot + ds_xx
+            self.res_syy[e] = syy_rot + ds_yy
+            self.res_szz[e] = szz_rot + ds_zz
+            self.res_sxy[e] = sxy_rot + ds_xy
 
     def assmb_internal(self):
         # Scale stresses by volume (integration weight)
@@ -225,7 +237,7 @@ class SubdomainSolution:
         syy = np.zeros(self.n_elem)
         sxy = np.zeros(self.n_elem)
         for e in range(self.n_elem):
-            weight = 2.0  # Adjust this weight according to your integration scheme
+            weight = 4.0
             sxx[e] = self.res_sxx[e] * (weight * self.detJ[e])
             syy[e] = self.res_syy[e] * (weight * self.detJ[e])
             sxy[e] = self.res_sxy[e] * (weight * self.detJ[e])
@@ -250,11 +262,12 @@ class SubdomainSolution:
 
     def assmb_mass(self):
         for e in range(self.n_elem):
-            element_mass = self.vol[e] * self.rho / 4.0  # Divide by 4 for 4-node elements
+            total_mass = self.vol[e] * self.rho
+            nodal_mass = total_mass / 4.0
             nodes = self.conn[e] - 1
             for node in nodes:
-                self.mass[node][0] += element_mass
-                self.mass[node][1] += element_mass
+                self.mass[node][0] += nodal_mass
+                self.mass[node][1] += nodal_mass
 
     def el_state_upd(self):
         self.el_geom()
@@ -266,11 +279,15 @@ class SubdomainSolution:
             self.assmb_mass()
 
     def assmb_vbcs(self, t):
-        if self.v_bc:
-            for index, velocities in zip(self.v_bc.indexes, self.v_bc.velocities):
-                for dof, velocity in enumerate(velocities):
-                    if velocity is not None or 0:
-                        self.v[index - 1][dof] = velocity(t)
+        if not self.v_bc:
+            return
+        for index, velocities in zip(self.v_bc.indexes, self.v_bc.velocities):
+            for dof, velocity_callable in enumerate(velocities):
+                if velocity_callable is None:
+                    continue
+                val = velocity_callable(t)   # numeric or None
+                if val is not None:
+                    self.v[index - 1][dof] = val
 
     def assmb_abcs(self):
         if self.a_bc:
@@ -278,18 +295,25 @@ class SubdomainSolution:
                 for dof, acceleration in enumerate(accelerations):
                     if acceleration is not None or 0:
                         self.a[index - 1][dof] = acceleration
+
+    def save_prev(self):
+        self.a_prev, self.v_prev, self.u_prev = np.copy(self.a), np.copy(self.v), np.copy(self.u)
+        self.f_int_prev, self.f_ext_prev = np.copy(self.f_int), np.copy(self.f_ext_prev)
+        self.t_prev, self.dt_prev = np.copy(self.t), np.copy(self.dt_prev)
   
     def solveq(self):
+        self.save_prev()
         self.a = (self.f_ext - self.f_int) / self.mass
+        self.a_tilda = np.copy(self.a)
         self.assmb_abcs()
         if self.n == 0:
             self.v += 0.5 * self.a * self.dt
         else:
             self.v += self.a * self.dt
         self.assmb_vbcs(self.t + 0.5 * self.dt)
+        self.u_inc = self.v * self.dt
         self.u += self.v * self.dt
+        self.coo = self.coo + self.u_inc
         self.n += 1
         self.t += self.dt
         self.f_int.fill(0)
-        
-
