@@ -3,10 +3,24 @@ import numpy as np
 This module is to apply Boundary conditions to the domain
 """
 
+class DisplBoundaryConditions:
+    def __init__(self, indexes: np.array, displacements: np.array):
+        self.indexes = indexes
+        self.displacements = displacements
+       
+    def displbcConstant(t, max_u):
+        return max_u
+
 class VelBoundaryConditions:
     def __init__(self, indexes: np.array, velocities: np.array):
         self.indexes = indexes
         self.velocities = velocities
+
+    def velic(t, threshold):
+        if t < threshold:
+            return 1.0
+        else:
+            return None
 
     def velbc(t, L, E, rho):
         sinePeriod = (L / 2) * np.sqrt(rho / E)

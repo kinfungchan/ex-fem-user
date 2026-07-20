@@ -1,5 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.tri as mtri
+from matplotlib.collections import LineCollection
 import imageio 
 import os
 
@@ -24,7 +26,7 @@ class History:
     '''
     def __init__(self, coordinates, n_nodes, n_elem):
         self.t = np.array([0.0])
-        self.coordinates = coordinates
+        self.coordinates = np.array([coordinates], dtype=float)
 
         # Initialize 3D arrays for acceleration, velocity, and displacement
         self.accel = np.zeros((1, n_nodes, 2), dtype=float)
@@ -38,6 +40,7 @@ class History:
 
     def append_timestep(self, t, coordinates, accel, vel, displ, sxx, syy, sxy):
         self.t = np.append(self.t, t)
+        self.coordinates = np.vstack((self.coordinates, [coordinates]))
         
         # Append new time step data to 3D arrays
         self.accel = np.vstack((self.accel, [accel]))
@@ -109,6 +112,72 @@ class History:
         plt.tight_layout()
         plt.show()
 
+    def plot_mesh_data(self, time_step, variables, dof, coords_list, conn_list, var_name,
+                       save_path=None, clim=None, zoom=1.0):
+        if time_step >= len(self.t):
+            raise IndexError(f"time_step {time_step} is outside stored history")
+
+        coords = np.asarray(coords_list[0])
+        conn = np.asarray(conn_list[0], dtype=int) - 1
+        variable = np.asarray(variables[0])
+
+        if conn.shape[1] != 4:
+            raise ValueError("plot_mesh_data expects 4-node quad elements")
+        if coords.ndim != 3 or coords.shape[2] != 2:
+            raise ValueError("plot_mesh_data expects coordinate history with shape (time, node, 2)")
+        if variable.ndim != 3 or variable.shape[1] != coords.shape[1]:
+            raise ValueError("plot_mesh_data expects nodal field history with shape (time, node, dof)")
+
+        xy = coords[time_step]
+        values = variable[time_step, :, dof]
+
+        fig, ax = plt.subplots(figsize=(10, 8))
+        plt.style.use('ggplot')
+
+        triangles = np.vstack((conn[:, [0, 1, 2]], conn[:, [0, 2, 3]]))
+        triangulation = mtri.Triangulation(xy[:, 0], xy[:, 1], triangles)
+        mappable = ax.tripcolor(
+            triangulation,
+            values,
+            shading='gouraud',
+            cmap='RdYlGn_r',
+            vmin=None if clim is None else clim[0],
+            vmax=None if clim is None else clim[1],
+        )
+
+        edges = []
+        for element in conn:
+            nodes = xy[element]
+            closed = np.vstack((nodes, nodes[0]))
+            edges.extend(zip(closed[:-1], closed[1:]))
+        ax.add_collection(LineCollection(edges, colors='white', linewidths=0.1, alpha=0.45))
+
+        colorbar = fig.colorbar(mappable, ax=ax)
+        colorbar.set_label(var_name)
+
+        ax.set_aspect('equal', adjustable='box')
+        ax.set_title(f"{var_name} - Time step {time_step} - Time: {self.t[time_step]:.4e}")
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+
+        xmin, ymin = np.min(xy, axis=0)
+        xmax, ymax = np.max(xy, axis=0)
+        xmid = 0.5 * (xmin + xmax)
+        ymid = 0.5 * (ymin + ymax)
+        width = xmax - xmin
+        height = ymax - ymin
+        if zoom and zoom > 0:
+            width /= zoom
+            height /= zoom
+        ax.set_xlim(xmid - 0.5 * width, xmid + 0.5 * width)
+        ax.set_ylim(ymid - 0.5 * height, ymid + 0.5 * height)
+
+        if save_path:
+            fig.savefig(save_path, dpi=200, bbox_inches='tight')
+            plt.close(fig)
+        else:
+            plt.show()
+
 class Animation:
     '''
     Output class to animate results through time
@@ -129,6 +198,10 @@ class Animation:
         self.filenames_mesh_vel = []
         self.filenames_mesh_disp = []
         self.filenames_mesh_stress = []
+        self.filenames_mesh_accel_pv = []
+        self.filenames_mesh_vel_pv = []
+        self.filenames_mesh_displ_pv = []
+        self.filenames_mesh_stress_pv = []
      
     def save_single_plot(self, n_plots, x, y, title, xlabel, ylabel, filenames, n, t):
         filename = f'{self.directory}/FEM1D_{title}{n}.png'
@@ -162,6 +235,27 @@ class Animation:
         plt.legend([f"{t}"])
         plt.savefig(filename)
         plt.close()
+
+    def save_timesteps(self, start_time, end_time, step, variables, dof, coords_list, conn_list,
+                       var_name, filenames, *, clim=None, zoom=1.0, prefix="frame"):
+        for time_step in range(start_time, end_time + 1, step):
+            save_path = os.path.join(self.directory, f"{prefix}_{time_step:04d}.png")
+            try:
+                self.P.plot_mesh_data(
+                    time_step,
+                    variables,
+                    dof,
+                    coords_list,
+                    conn_list,
+                    var_name,
+                    save_path=save_path,
+                    clim=clim,
+                    zoom=zoom,
+                )
+            except IndexError:
+                break
+            filenames.append(save_path)
+        return filenames
             
     def create_gif(self, gif_name, filenames):
         gif_path = os.path.join(self.directory, gif_name)

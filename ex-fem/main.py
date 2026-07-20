@@ -9,8 +9,8 @@ It runs a single domain problem (monolithic) with a single material
 def main():
     print("Welcome to ex_fem User!")
 
-    # 1x1 elem cross section Monolithic Wave Propagation (X-Dir)
     benchmarks.benchmark_01()
+    benchmarks.benchmark_bulkWave()
 
 if __name__ == '__main__':
     main()
