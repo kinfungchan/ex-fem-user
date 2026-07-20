@@ -30,13 +30,14 @@ class SteelBarInput(BaseInput):
         def vel(t): return vbc.velbc(t, self.max_length, self.young, self.density) 
         velBCs = vbc(np.array([1, 252]), np.array([[vel, None], [vel, None]])) # Indexes Node and [Velocities, DOF]
         # Boundary Conditions
+        self.u_bc = None
         self.v_bc = velBCs
         self.a_bc = abc(np.array([]).reshape((0, 0)), np.array([]).reshape((0, 0)))
         self.f_bc = None
         self.s_bc = None
 
         # Time variables
-        self.tfinal = 0.0002 * 500
+        self.tfinal = 0.1
         self.Co = 0.5
 
         ## Additional Parameters
